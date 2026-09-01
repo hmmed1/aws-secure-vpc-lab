@@ -1,121 +1,527 @@
+# Secure AWS VPC Web Server Lab
+
+This project is a hands-on AWS networking and security lab. The goal is to build a small cloud environment from scratch and understand how the different AWS networking components work together.
+
+This README is also a **step-by-step guide**. You can follow each section in order to recreate the lab yourself.
+
+The lab covers:
+
+* Creating an AWS VPC
+* Dividing the VPC into public and private subnets
+* Configuring Internet routing
+* Securing an EC2 instance with a Security Group
+* Deploying an Apache web server
+* Enabling HTTPS with SSL/TLS
+* Cleaning up the AWS environment after the lab
+
+## Architecture
+
+The final architecture looks like this:
+
+```text
+                         Internet
+                            |
+                            |
+                  +-------------------+
+                  |  Internet Gateway |
+                  +---------+---------+
+                            |
+                     secure-lab-vpc
+                      10.0.0.0/16
+                            |
+              +-------------+-------------+
+              |                           |
+              |                           |
+       Public Subnet               Private Subnet
+       10.0.1.0/24                10.0.2.0/24
+              |                           |
+              |                           |
+        EC2 Web Server              Backend / DB
+        Apache HTTP/HTTPS           No direct Internet
+              |
+        Security Group
+        - SSH (22)
+        - HTTP (80)
+        - HTTPS (443)
+```
+
+The main idea is to separate resources based on their role. The web server is placed in the public subnet because it needs to be reachable from the Internet, while sensitive backend resources can be placed in the private subnet.
+
+---
+
 ## Step 1: Creating the Base Virtual Private Cloud (VPC)
 
 ### Concept
-A Virtual Private Cloud (VPC) provides an isolated virtual network within AWS to host infrastructure securely. To ensure proper IP address management, we assign a `/16` private CIDR block, giving us 65,536 available addresses that can be sub-divided into smaller subnets later.
+
+A **Virtual Private Cloud (VPC)** is a private network inside AWS where we can deploy and organize our cloud resources.
+
+For this lab, we start with a `/16` network:
+
+```text
+10.0.0.0/16
+```
+
+This provides 65,536 IPv4 addresses that can later be divided into smaller subnets.
+
+The VPC will be the main network containing all the resources we create during the lab.
 
 ### Implementation Steps
-1. Navigated to the **VPC Dashboard** in the AWS Console.
-2. Selected **Create VPC** with the **VPC only** option to manage step-by-step creation manually.
-3. Configured the core parameters:
-   - **Name Tag:** `secure-lab-vpc`
-   - **IPv4 CIDR Block:** `10.0.0.0/16`
-   - **Tenancy:** Default
-4. Enabled **DNS Hostnames** and **DNS Resolution** under VPC settings to ensure instances receive public DNS records upon launch.
+
+1. Open the **VPC Dashboard** in the AWS Console.
+
+2. Select **Create VPC**.
+
+3. Choose the **VPC only** option. This allows us to create and configure each networking component manually.
+
+4. Configure the following settings:
+
+   * **Name Tag:** `secure-lab-vpc`
+   * **IPv4 CIDR Block:** `10.0.0.0/16`
+   * **Tenancy:** Default
+
+5. After creating the VPC, open its settings and make sure the following options are enabled:
+
+   * **DNS Hostnames**
+   * **DNS Resolution**
+
+These settings allow resources inside the VPC to use AWS DNS services and resolve domain names correctly.
 
 ![VPC Creation Details](images/01-vpc-setup.png)
+
+---
 
 ## Step 2: Subnetting & Network Segmentation
 
 ### Concept
-To enforce network security through isolation, we divide our `/16` network into dedicated `/24` subnets (256 addresses each). 
 
-- **Public Subnet:** Hosts internet-facing applications (web servers). Auto-assign public IPv4 is enabled here.
-- **Private Subnet:** Hosts sensitive backend infrastructure (databases) with no direct ingress paths from the outside world.
+A large network is usually divided into smaller networks called **subnets**.
+
+Our VPC uses:
+
+```text
+10.0.0.0/16
+```
+
+We divide it into two `/24` subnets:
+
+```text
+10.0.0.0/16
+|
++-- Public Subnet
+|   10.0.1.0/24
+|
++-- Private Subnet
+    10.0.2.0/24
+```
+
+Each `/24` subnet contains 256 IPv4 addresses.
+
+The two subnets have different purposes:
+
+* **Public Subnet:** Used for resources that need to be accessible from the Internet, such as a web server.
+* **Private Subnet:** Used for resources that should not be directly accessible from the Internet, such as databases or backend services.
 
 ### Implementation Steps
-1. Navigated to **Subnets** in the VPC Dashboard and bound them to `secure-lab-vpc`.
-2. Created **`public-subnet-1`**:
-   - **CIDR:** `10.0.1.0/24`
-   - **Availability Zone:** `us-east-1a`
-3. Created **`private-subnet-1`**:
-   - **CIDR:** `10.0.2.0/24`
-   - **Availability Zone:** `us-east-1a`
-4. Modified settings for `public-subnet-1` to enable **Auto-assign public IPv4 address**.
+
+1. Open **Subnets** in the VPC Dashboard.
+2. Select **Create subnet**.
+3. Make sure the subnets are associated with `secure-lab-vpc`.
+
+### Create the Public Subnet
+
+Create the following subnet:
+
+* **Name:** `public-subnet-1`
+* **CIDR:** `10.0.1.0/24`
+* **Availability Zone:** `us-east-1a`
+
+After creating it, modify the subnet settings and enable:
+
+**Auto-assign public IPv4 address**
+
+This allows EC2 instances launched in this subnet to automatically receive a public IPv4 address.
+
+### Create the Private Subnet
+
+Create another subnet with:
+
+* **Name:** `private-subnet-1`
+* **CIDR:** `10.0.2.0/24`
+* **Availability Zone:** `us-east-1a`
+
+The private subnet does not need public IPv4 addresses.
 
 ![Subnet Setup Details](images/02-subnets-setup.png)
+
+---
 
 ## Step 3: Internet Routing Setup
 
 ### Concept
-Subnets are isolated by default. To make `public-subnet-1` internet-accessible, we attach an Internet Gateway (IGW) to the VPC and configure a custom Route Table. 
 
-- **Default Route (`10.0.0.0/16 -> local`):** Allows resources within the VPC to communicate with each other.
-- **Internet Route (`0.0.0.0/0 -> IGW`):** Directs any outbound/inbound internet traffic through the IGW.
+Creating a VPC and a subnet does not automatically give the subnet access to the Internet.
 
-`private-subnet-1` remains unassociated with this route table, maintaining its private status.
+To make our public subnet accessible from the Internet, we need:
+
+1. An **Internet Gateway (IGW)**
+2. A **Route Table**
+3. A route that sends Internet traffic to the Internet Gateway
+
+The default route inside the VPC is:
+
+```text
+10.0.0.0/16 -> local
+```
+
+This allows resources inside the VPC to communicate with each other.
+
+We then add:
+
+```text
+0.0.0.0/0 -> Internet Gateway
+```
+
+This tells AWS to send traffic destined for the Internet through the Internet Gateway.
+
+The private subnet is not associated with this public route table, so it does not have a direct route to the Internet.
 
 ### Implementation Steps
-1. Created an Internet Gateway named **`secure-lab-igw`** and attached it to `secure-lab-vpc`.
-2. Created a custom Route Table named **`public-route-table`** bound to `secure-lab-vpc`.
-3. Added a route to destination `0.0.0.0/0` pointing to `secure-lab-igw` as the target.
-4. Associated **`public-subnet-1`** with `public-route-table`.
+
+#### 1. Create the Internet Gateway
+
+Create an Internet Gateway named:
+
+```text
+secure-lab-igw
+```
+
+Then attach it to:
+
+```text
+secure-lab-vpc
+```
+
+#### 2. Create the Public Route Table
+
+Create a custom route table named:
+
+```text
+public-route-table
+```
+
+Make sure it belongs to:
+
+```text
+secure-lab-vpc
+```
+
+#### 3. Add the Internet Route
+
+Add the following route:
+
+```text
+Destination: 0.0.0.0/0
+Target:      secure-lab-igw
+```
+
+The route table should now contain:
+
+| Destination   | Target           |
+| ------------- | ---------------- |
+| `10.0.0.0/16` | `local`          |
+| `0.0.0.0/0`   | `secure-lab-igw` |
+
+#### 4. Associate the Public Subnet
+
+Associate:
+
+```text
+public-subnet-1
+```
+
+with:
+
+```text
+public-route-table
+```
+
+We do not associate `private-subnet-1` with this route table.
 
 ![Public Route Table Configuration](images/03-public-route-table.png)
+
+---
 
 ## Step 4: Network Security & Firewall Configuration
 
 ### Concept
-AWS Security Groups function as stateful virtual firewalls filtering traffic at the instance level. Applying the principle of least privilege, we block all inbound access by default and explicitly permit only required application ports.
 
-- **Port 22 (SSH):** Configured for administrative management via EC2 Instance Connect / Administrator IP.
-- **Port 80 (HTTP) & Port 443 (HTTPS):** Opened globally (`0.0.0.0/0`) for web client ingress.
+AWS **Security Groups** act as virtual firewalls for resources such as EC2 instances.
+
+They control which incoming and outgoing connections are allowed.
+
+For this lab, we follow the principle of **least privilege**: only the ports that are required for the web server are opened.
+
+The required ports are:
+
+* **Port 22 — SSH:** Used for server administration.
+* **Port 80 — HTTP:** Used for normal web traffic.
+* **Port 443 — HTTPS:** Used for encrypted web traffic.
 
 ### Implementation Steps
-1. Navigated to **Security Groups** in the VPC Dashboard and clicked **Create security group**.
-2. Configured basic parameters:
-   - **Name:** `web-server-sg`
-   - **VPC:** `secure-lab-vpc`
-3. Configured inbound rules:
-   - Added **SSH** (TCP/22) for initial administrative setup.
-   - Added **HTTP** (TCP/80) originating from `0.0.0.0/0`.
-   - Added **HTTPS** (TCP/443) originating from `0.0.0.0/0`.
-4. Retained default outbound rules permitting all egress traffic.
+
+1. Open **Security Groups** in the VPC Dashboard.
+
+2. Select **Create security group**.
+
+3. Configure:
+
+   * **Name:** `web-server-sg`
+   * **VPC:** `secure-lab-vpc`
+
+4. Add the following inbound rules:
+
+| Type  | Protocol | Port | Source                         | Purpose               |
+| ----- | -------- | ---: | ------------------------------ | --------------------- |
+| SSH   | TCP      |   22 | Your IP / EC2 Instance Connect | Server administration |
+| HTTP  | TCP      |   80 | `0.0.0.0/0`                    | Web traffic           |
+| HTTPS | TCP      |  443 | `0.0.0.0/0`                    | Secure web traffic    |
+
+For SSH, it is better to restrict access to a trusted IP address when possible instead of allowing SSH from anywhere.
+
+The default outbound rule can remain enabled for this lab.
 
 ![Security Group Inbound Rules](images/04-security-group-rules.png)
 
+---
 
 ## Step 5: Web Server Provisioning & SSL/TLS Encryption
 
 ### Concept
-With network security configured, we deploy an EC2 instance running Amazon Linux 2023 inside the public subnet. To resolve repository domains and download packages, DNS resolution must be enabled at the VPC level. We install the Apache web daemon (`httpd`) along with `mod_ssl` to serve incoming web traffic. To protect data in transit without a registered domain, we generate an RSA 2048-bit self-signed X.509 certificate to encrypt web traffic on TCP port 443. Following configuration, SSH access is hardened according to least privilege practices.
+
+Now that the network and security configuration are ready, we can deploy our web server.
+
+We use an **Amazon Linux 2023 EC2 instance** and place it inside the public subnet.
+
+The server will run **Apache HTTP Server (`httpd`)** and will be accessible through HTTP and HTTPS.
+
+We also create a self-signed SSL/TLS certificate because this lab does not use a registered domain name.
 
 ### Implementation Steps
-1. Configured **`secure-lab-vpc`** settings to enable **DNS Resolution** and **DNS Hostnames**.
-2. Launched an EC2 instance with the following specifications:
-   - **Name:** `secure-web-server`
-   - **Subnet:** `public-subnet-1`
-   - **Security Group:** `web-server-sg`
-3. Connected via EC2 Instance Connect to install Apache, configure SSL, and create the landing page:
-   ```bash
-   sudo dnf update -y
-   sudo dnf install -y httpd mod_ssl
-   sudo systemctl start httpd
-   sudo systemctl enable httpd
-   echo '<h1>Welcome to Secure AWS Lab Web Server!</h1>' | sudo tee /var/www/html/index.html
-   sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-     -keyout /etc/pki/tls/private/apache-selfsigned.key \
-     -out /etc/pki/tls/certs/apache-selfsigned.crt
-   sudo systemctl restart httpd
 
-![Server Live ](images/05-web-server-live.png)
+1. Make sure the VPC has **DNS Resolution** and **DNS Hostnames** enabled.
+
+2. Launch an EC2 instance with:
+
+   * **Name:** `secure-web-server`
+   * **VPC:** `secure-lab-vpc`
+   * **Subnet:** `public-subnet-1`
+   * **Security Group:** `web-server-sg`
+   * **Operating System:** Amazon Linux 2023
+
+3. Connect to the instance using **EC2 Instance Connect**.
+
+4. Update the system:
+
+```bash
+sudo dnf update -y
+```
+
+5. Install Apache and SSL support:
+
+```bash
+sudo dnf install -y httpd mod_ssl
+```
+
+6. Start Apache:
+
+```bash
+sudo systemctl start httpd
+```
+
+7. Enable Apache so it starts automatically after a reboot:
+
+```bash
+sudo systemctl enable httpd
+```
+
+8. Create a simple landing page:
+
+```bash
+echo '<h1>Welcome to Secure AWS Lab Web Server!</h1>' | sudo tee /var/www/html/index.html
+```
+
+At this point, the server should be accessible over HTTP using its public IP address:
+
+```text
+http://YOUR_PUBLIC_IP
+```
+
+![Server Live](images/05-web-server-live.png)
+
+### Configure HTTPS
+
+Because we do not have a registered domain name for this lab, we use a self-signed certificate for testing.
+
+Generate a 2048-bit RSA certificate:
+
+```bash
+sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/pki/tls/private/apache-selfsigned.key \
+  -out /etc/pki/tls/certs/apache-selfsigned.crt
+```
+
+Then restart Apache:
+
+```bash
+sudo systemctl restart httpd
+```
+
+The server can now be tested over HTTPS:
+
+```text
+https://YOUR_PUBLIC_IP
+```
+
+A browser may display a certificate warning because the certificate is self-signed and is not trusted by a public Certificate Authority. This is expected in a learning environment.
+
+In a production environment, we would normally use a certificate issued by a trusted Certificate Authority.
+
+---
 
 ## Step 6: Resource Teardown & Environment Cleanup
 
 ### Concept
-To adhere to cloud cost-optimization best practices and prevent unnecessary charges, all manually provisioned resources must be decommissioned in reverse order of creation. Removing instances first releases elastic network interface (ENI) dependencies, allowing subnets, security groups, route tables, and the parent VPC to be deleted cleanly.
+
+Cloud resources should not be left running after a lab is finished because some AWS services can generate charges.
+
+For this reason, we remove the resources we created during the lab.
+
+The general cleanup order is:
+
+```text
+EC2 Instance
+      ↓
+Internet Gateway
+      ↓
+Security Group
+      ↓
+VPC and networking resources
+```
 
 ### Implementation Steps
-1. **Terminated Compute Layer:**
-   - Navigated to **EC2 Console** $\rightarrow$ **Instances**.
-   - Selected `secure-web-server` $\rightarrow$ **Instance state** $\rightarrow$ **Terminate instance**.
-   - Verified the instance reached a `Terminated` state to free network interface attachments.
-2. **Decommissioned Internet Gateway:**
-   - Navigated to **Internet Gateways** $\rightarrow$ Selected `secure-lab-igw`.
-   - Executed **Detach from VPC**, then permanently deleted the gateway.
-3. **Removed Network Security Rules:**
-   - Navigated to **Security Groups** $\rightarrow$ Selected and deleted `web-server-sg`.
-4. **Deleted Virtual Private Cloud (VPC):**
-   - Navigated to **Your VPCs** $\rightarrow$ Selected `secure-lab-vpc` $\rightarrow$ **Actions** $\rightarrow$ **Delete VPC**.
-   - Confirmed full deletion, automatically purging associated subnets (`public-subnet-1`, `private-subnet-1`), route tables, and default security groups.
+
+#### 1. Terminate the EC2 Instance
+
+Go to:
+
+**EC2 Console → Instances**
+
+Select:
+
+`secure-web-server`
+
+Then choose:
+
+**Instance state → Terminate instance**
+
+Wait until the instance reaches the `Terminated` state.
+
+#### 2. Delete the Internet Gateway
+
+Go to:
+
+**VPC → Internet Gateways**
+
+Select:
+
+`secure-lab-igw`
+
+First choose:
+
+**Detach from VPC**
+
+Then delete the Internet Gateway.
+
+#### 3. Delete the Security Group
+
+Go to:
+
+**VPC → Security Groups**
+
+Select:
+
+`web-server-sg`
+
+Then delete the Security Group.
+
+#### 4. Delete the VPC
+
+Go to:
+
+**VPC → Your VPCs**
+
+Select:
+
+`secure-lab-vpc`
+
+Then choose:
+
+**Actions → Delete VPC**
+
+Confirm the deletion.
+
+AWS will remove the associated networking resources that are eligible for deletion, including the subnets and route tables created for this lab.
 
 ![Resource Teardown Verification](images/06-resource-cleanup.png)
+
+---
+
+## Final Result
+
+We started with an empty AWS environment and built a small cloud network with a public web server and a separate private subnet.
+
+The final design was:
+
+```text
+                         Internet
+                            |
+                     Internet Gateway
+                            |
+                  +---------+---------+
+                  |                   |
+            Public Subnet       Private Subnet
+            10.0.1.0/24         10.0.2.0/24
+                  |                   |
+                  |                   |
+             EC2 Web Server       Backend / DB
+                  |
+              Apache Server
+              HTTP / HTTPS
+                  |
+           Security Group
+```
+
+During the lab, we worked with:
+
+* VPCs and CIDR addressing
+* Public and private subnets
+* Route tables
+* Internet Gateways
+* Security Groups
+* EC2
+* Linux
+* Apache
+* HTTP and HTTPS
+* SSL/TLS certificates
+* Basic cloud security
+* Cloud resource cleanup
+
+This project helped connect the networking concepts learned in theory with an actual cloud environment.
+This lab can be expanded into a more realistic cloud architecture.
+
+
+
+
+
+
+**Build it, test it, break it, fix it, and learn from it.**
