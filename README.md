@@ -18,32 +18,7 @@ The lab covers:
 
 The final architecture looks like this:
 
-```text
-                         Internet
-                            |
-                            |
-                  +-------------------+
-                  |  Internet Gateway |
-                  +---------+---------+
-                            |
-                     secure-lab-vpc
-                      10.0.0.0/16
-                            |
-              +-------------+-------------+
-              |                           |
-              |                           |
-       Public Subnet               Private Subnet
-       10.0.1.0/24                10.0.2.0/24
-              |                           |
-              |                           |
-        EC2 Web Server              Backend / DB
-        Apache HTTP/HTTPS           No direct Internet
-              |
-        Security Group
-        - SSH (22)
-        - HTTP (80)
-        - HTTPS (443)
-```
+![Architecture](images/07-diagram.png)
 
 The main idea is to separate resources based on their role. The web server is placed in the public subnet because it needs to be reachable from the Internet, while sensitive backend resources can be placed in the private subnet.
 
@@ -476,47 +451,34 @@ AWS will remove the associated networking resources that are eligible for deleti
 
 ---
 
-## Final Result
+Step 7: Infrastructure as Code (IaC) & Automation
+Concept
+While building infrastructure manually through the AWS Console builds foundational knowledge, Infrastructure as Code (IaC) is standard practice in production.
 
-We started with an empty AWS environment and built a small cloud network with a public web server and a separate private subnet.
+Recommended Learning Resource
+Want to learn how to build cloud infrastructure like this with Terraform? Check out this complete tutorial:
 
-The final design was:
+Terraform Course - Automate your AWS Cloud Infrastructure (freeCodeCamp)
 
-```text
-                         Internet
-                            |
-                     Internet Gateway
-                            |
-                  +---------+---------+
-                  |                   |
-            Public Subnet       Private Subnet
-            10.0.1.0/24         10.0.2.0/24
-                  |                   |
-                  |                   |
-             EC2 Web Server       Backend / DB
-                  |
-              Apache Server
-              HTTP / HTTPS
-                  |
-           Security Group
-```
+Using Terraform, the entire network stack—VPC, subnets, route tables, security groups, and the web server—is defined in declarative configuration files. This makes deployments repeatable, version-controlled, and fast.
 
-During the lab, we worked with:
+Implementation & Teardown
+Deploy Infrastructure:
 
-* VPCs and CIDR addressing
-* Public and private subnets
-* Route tables
-* Internet Gateways
-* Security Groups
-* EC2
-* Linux
-* Apache
-* HTTP and HTTPS
-* SSL/TLS certificates
-* Basic cloud security
-* Cloud resource cleanup
+Bash
+terraform init
+terraform plan
+terraform apply -auto-approve
 
-This project helped connect the networking concepts learned in theory with an actual cloud environment.
+![Live Server Using Terraform](images/08-live_server_terraform.png)
+
+Destroy Everything (Teardown):
+
+Bash
+terraform destroy -auto-approve
+Running this command automatically removes all created AWS resources (EC2, VPC, Internet Gateway, Security Groups) in the correct dependency order, ensuring no leftover components generate unexpected costs.
+
+This Project Will help you build a base in cloud concepts aswell as some networking consecepts
 This lab can be expanded into a more realistic cloud architecture.
 
 
