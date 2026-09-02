@@ -458,7 +458,8 @@ While building infrastructure manually through the AWS Console builds foundation
 Recommended Learning Resource
 Want to learn how to build cloud infrastructure like this with Terraform? Check out this complete tutorial:
 
-Terraform Course - Automate your AWS Cloud Infrastructure (freeCodeCamp)
+[Terraform Course - Automate your AWS Cloud Infrastructure (freeCodeCamp)
+](https://www.youtube.com/watch?v=SLB_c_ayRMo&t=1251s)
 
 Using Terraform, the entire network stack—VPC, subnets, route tables, security groups, and the web server—is defined in declarative configuration files. This makes deployments repeatable, version-controlled, and fast.
 
